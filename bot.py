@@ -30,7 +30,7 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-queue = []  # Artık sadece şarkı isimlerini tutacak
+queue = []  # Sadece şarkı isimlerini tutacak
 voice_client = None
 standby_task = None
 STANDBY_TIMEOUT = 900
@@ -68,7 +68,6 @@ def clean_old_files():
         mp3_files = [f for f in os.listdir(MUSIC_DIR) if f.endswith('.mp3')]
         if len(mp3_files) >= MAX_FILES:
             mp3_files.sort(key=lambda x: os.path.getctime(os.path.join(MUSIC_DIR, x)))
-            # Fazla dosyaları sil (en eskiler)
             for file in mp3_files[:-MAX_FILES + 1]:
                 os.remove(os.path.join(MUSIC_DIR, file))
     except Exception as e:
@@ -120,7 +119,7 @@ class MusicControls(View):
         else:
             await interaction.response.send_message("Şu anda çalan bir şarkı yok.")
 
-    @discord.ui.button(label="Pause/Resume", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="Oynat/Duraklat", style=discord.ButtonStyle.blurple)
     async def pause_resume(self, interaction: discord.Interaction, button: Button):
         global is_paused
         if voice_client and voice_client.is_playing() and not is_paused:
@@ -134,7 +133,7 @@ class MusicControls(View):
         else:
             await interaction.response.send_message("Şu anda çalan bir şarkı yok.")
 
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.grey)
+    @discord.ui.button(label="Durdur", style=discord.ButtonStyle.grey)
     async def stop(self, interaction: discord.Interaction, button: Button):
         global voice_client, queue
         if voice_client and voice_client.is_connected():
@@ -147,7 +146,7 @@ class MusicControls(View):
         else:
             await interaction.response.send_message("Zaten bir ses kanalında değilim.")
 
-    @discord.ui.button(label="Queue", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Siradakiler", style=discord.ButtonStyle.green)
     async def queue_list(self, interaction: discord.Interaction, button: Button):
         if not queue:
             await interaction.response.send_message("Kuyruk şu anda boş.")
@@ -155,7 +154,7 @@ class MusicControls(View):
         queue_str = "\n".join([f"{i+1}. {song}" for i, song in enumerate(queue)])
         await interaction.response.send_message(f"Şarkı Kuyruğu:\n{queue_str}")
 
-    @discord.ui.button(label="Clear", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Sifirla", style=discord.ButtonStyle.red)
     async def clear(self, interaction: discord.Interaction, button: Button):
         global queue
         queue.clear()
@@ -181,7 +180,7 @@ class ExtraControls(View):
         state = "açık" if is_shuffled else "kapalı"
         await interaction.response.send_message(f"Karıştırma modu {state}.")
 
-    @discord.ui.button(label="Status", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Durum", style=discord.ButtonStyle.green)
     async def status(self, interaction: discord.Interaction, button: Button):
         if not voice_client or not voice_client.is_connected():
             await interaction.response.send_message("Şu anda bir ses kanalına bağlı değilim.")
@@ -197,7 +196,7 @@ class ExtraControls(View):
         ]
         await interaction.response.send_message("\n".join(status_msg))
 
-    @discord.ui.button(label="Vol Up", style=discord.ButtonStyle.grey)
+    @discord.ui.button(label="Ses Arttir", style=discord.ButtonStyle.grey)
     async def volume_up(self, interaction: discord.Interaction, button: Button):
         if not voice_client or not voice_client.is_playing():
             await interaction.response.send_message("Şu anda müzik çalmıyor.")
@@ -207,7 +206,7 @@ class ExtraControls(View):
         voice_client.source.volume = new_volume / 100
         await interaction.response.send_message(f"Ses seviyesi {new_volume}% olarak ayarlandı.")
 
-    @discord.ui.button(label="Vol Down", style=discord.ButtonStyle.grey)
+    @discord.ui.button(label="Ses Dusur", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: Button):
         if not voice_client or not voice_client.is_playing():
             await interaction.response.send_message("Şu anda müzik çalmıyor.")
@@ -235,10 +234,10 @@ async def play_next_song(ctx_or_interaction):
                 else:
                     await ctx_or_interaction.followup.send(f"Şimdi çalıyor: {next_song_name}", view=MusicControls())
             else:
-                await (ctx_or_interaction.send if isinstance(ctx_or_interaction, commands.Context) else ctx_or_interaction.followup.send)(f"{next_song_name} indirilemedi.")
+                logger.error(f"{next_song_name} indirilemedi.")
                 await play_next_song(ctx_or_interaction)  # Hata varsa bir sonrakine geç
         else:
-            await (ctx_or_interaction.send if isinstance(ctx_or_interaction, commands.Context) else ctx_or_interaction.followup.send)(f"{next_song_name} bulunamadı.")
+            logger.error(f"{next_song_name} bulunamadı.")
             await play_next_song(ctx_or_interaction)
     else:
         if isinstance(ctx_or_interaction, commands.Context):
@@ -273,13 +272,13 @@ async def play(ctx, url_or_query: str):
                 track = item['track']
                 track_name = f"{track['name']} - {track['artists'][0]['name']}"
                 queue.append(track_name)
-                await ctx.send(f"{track_name} kuyruğa eklendi!")
+                logger.info(f"{track_name} kuyruğa eklendi.")
                 if first_song and not voice_client.is_playing():
                     first_song = False
                     await play_next_song(ctx)
         else:
             queue.append(url_or_query)
-            await ctx.send(f"{url_or_query} kuyruğa eklendi!")
+            logger.info(f"{url_or_query} kuyruğa eklendi.")
             if not voice_client.is_playing():
                 await play_next_song(ctx)
 
