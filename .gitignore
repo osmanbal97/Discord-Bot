@@ -1,0 +1,82 @@
+# Python cache ve geçici dosyalar
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+.env
+*.env
+
+# Spotipy ve diğer API cache dosyaları
+.cache
+spotify_cache/
+
+# VSCode settings (opsiyonel, sadece kendi bilgisayarında kalır)
+.vscode/
+
+# MacOS gereksiz dosyalar
+.DS_Store
+
+# Log dosyaları
+*.log
+
+# Çıktı ve indirme dosyaları
+song.*
+*.mp3
+*.webm
+
+# Python egg dosyaları
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Byte-compiled / optimized / DLL dosyaları
+*.pyc
+
+# Test coverage
+.coverage
+htmlcov/
+*.cover
+
+# Virtualenv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE/editor ayar dosyaları (opsiyonel)
+.idea/
+*.iml
+
+# Pytest cache
+.pytest_cache/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# MyPy cache
+.mypy_cache/
+
+# Profiling data
+.prof
+
+# Docker
+*.dockerfile
+docker-compose*.yml
+
+# AWS SAM
+.aws-sam/
+
+# Local dev overrides
+local_settings.py
+
+# PyCharm stuff
+.idea/
