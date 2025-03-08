@@ -114,7 +114,7 @@ def download_song(url, track_name):
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '256',
+                'preferredquality': '320',
             }],
             'outtmpl': f'{MUSIC_DIR}/{track_name}.%(ext)s',
             'quiet': True,
@@ -189,7 +189,7 @@ class MusicControls(View):
         queue_str = "\n".join([f"{i+1}. {song}" for i, song in enumerate(queue)])
         await interaction.response.send_message(f"Şarkı Kuyruğu:\n{queue_str}")
 
-    @discord.ui.button(label="Sifirla", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Sirayi Temizle", style=discord.ButtonStyle.red)
     async def clear(self, interaction: discord.Interaction, button: Button):
         global queue
         queue.clear()
@@ -531,7 +531,7 @@ async def help(ctx):
     )
     embed.add_field(
         name="!playnow <şarkı adı veya URL>",
-        value="Mevcut şarkıyı keser ve yeni şarkıyı hemen çalar.\n**Örnek:**\n- `!playnow Imagine Dragons - Believer` (YouTube'dan şarkıyı hemen çalar)\n- `!playnow https://open.spotify.com/track/xxx` (Spotify şarkısını hemen çalar)",
+        value="Mevcut şarkıyı keser ve yeni şarkıyı hemen çalar.\n**Örnek:**\n- `!playnow NTO Beyond Control` (YouTube'dan şarkıyı hemen çalar)\n- `!playnow https://open.spotify.com/track/xxx` (Spotify şarkısını hemen çalar)",
         inline=False
     )
     embed.add_field(
