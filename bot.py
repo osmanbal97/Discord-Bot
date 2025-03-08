@@ -30,6 +30,7 @@ intents.voice_states = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+bot.remove_command("help")  # Added to remove default help command
 
 queue = []  # Sadece şarkı isimlerini tutacak
 voice_client = None
@@ -517,7 +518,7 @@ async def search(ctx, *, query: str):
 
 @bot.command()
 async def help(ctx):
-    embed = discord.Embed(title="Bot Komutları", description="Aşağıda botun tüm komutları ve kullanım örnekleri listelenmiştir.", color=discord.Color.blue())
+    embed = discord.Embed(title="Bot Komutları", description="Aşağıda botun tüm komutları ve kullanım örnekleri listelenmiştir.\nAyrica ambarsı tten", color=discord.Color.blue())
     embed.add_field(
         name="!play <şarkı adı veya URL>",
         value="Bir şarkıyı veya Spotify çalma listesini kuyruğun sonuna ekler.\n**Örnek:**\n- `!play Imagine Dragons - Believer` (YouTube'dan şarkı ekler)\n- `!play https://open.spotify.com/track/xxx` (Spotify şarkısı ekler)\n- `!play https://open.spotify.com/playlist/xxx` (Spotify çalma listesi ekler)",
@@ -553,7 +554,7 @@ async def help(ctx):
         value="Kuyruktaki belirli bir şarkıyı siler.\n**Örnek:**\n- `!remove 2` (2. sıradaki şarkıyı siler)",
         inline=False
     )
-    embed.set_footer(text="Not: Botu kullanmadan önce bir ses kanalına girmelisiniz.")
+    embed.set_footer(text="Not: Botu kullanmadan önce bir ses kanalına girmelisiniz yada kaana")
     await ctx.send(embed=embed)
 
 @bot.event
