@@ -521,12 +521,12 @@ async def help(ctx):
     embed = discord.Embed(title="Bot Komutları", description="Aşağıda botun tüm komutları ve kullanım örnekleri listelenmiştir.\nAyrica ambarsı tten", color=discord.Color.blue())
     embed.add_field(
         name="!play <şarkı adı veya URL>",
-        value="Bir şarkıyı veya Spotify çalma listesini kuyruğun sonuna ekler.\n**Örnek:**\n- `!play Imagine Dragons - Believer` (YouTube'dan şarkı ekler)\n- `!play https://open.spotify.com/track/xxx` (Spotify şarkısı ekler)\n- `!play https://open.spotify.com/playlist/xxx` (Spotify çalma listesi ekler)",
+        value="Bir şarkıyı veya Spotify çalma listesini kuyruğun sonuna ekler.\n**Örnek:**\n- `!play NTO Beyond Control` (YouTube'dan şarkı ekler)\n- `!play https://open.spotify.com/track/xxx` (Spotify şarkısı ekler)\n- `!play https://open.spotify.com/playlist/xxx` (Spotify çalma listesi ekler)",
         inline=False
     )
     embed.add_field(
         name="!playnext <şarkı adı veya URL>",
-        value="Bir şarkıyı kuyruğun başına ekler.\n**Örnek:**\n- `!playnext Imagine Dragons - Believer` (YouTube'dan şarkıyı başa ekler)\n- `!playnext https://open.spotify.com/track/xxx` (Spotify şarkısını başa ekler)",
+        value="Bir şarkıyı kuyruğun başına ekler.\n**Örnek:**\n- `!playnext NTO Beyond Control` (YouTube'dan şarkıyı başa ekler)\n- `!playnext https://open.spotify.com/track/xxx` (Spotify şarkısını başa ekler)",
         inline=False
     )
     embed.add_field(
@@ -536,7 +536,7 @@ async def help(ctx):
     )
     embed.add_field(
         name="!search <şarkı adı>",
-        value="YouTube'da şarkı arar ve ilk 5 sonucu butonlarla listeler.\n**Örnek:**\n- `!search Imagine Dragons` (5 seçenek sunar, butona tıklayarak seçilir)",
+        value="YouTube'da şarkı arar ve ilk 5 sonucu butonlarla listeler.\n**Örnek:**\n- `!search NTO Beyond Control` (5 seçenek sunar, butona tıklayarak seçilir)",
         inline=False
     )
     embed.add_field(
