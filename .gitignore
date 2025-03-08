@@ -29,7 +29,8 @@ song.*
 *.webm
 music/*.tmp
 music/*.mp3
-music/*.webm    
+music/*.webm
+music/ 
 music/large_file.mp4
 
 # Python egg 
