@@ -32,7 +32,7 @@ music/*.mp3
 music/*.webm    
 music/large_file.mp4
 
-# Python egg dosyaları
+# Python egg 
 *.egg
 *.egg-info/
 dist/
