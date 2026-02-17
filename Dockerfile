@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg libffi-dev python3-dev gcc libsodium-dev && \
+    apt-get install -y --no-install-recommends ffmpeg libffi-dev python3-dev gcc libsodium-dev curl unzip && \
+    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
