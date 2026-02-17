@@ -1,5 +1,5 @@
 discord.py
+wavelink
 PyNaCl
-yt-dlp
-spotipy
 python-dotenv
+aiohttp

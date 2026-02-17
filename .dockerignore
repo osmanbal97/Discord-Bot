@@ -1,5 +1,8 @@
 .env
 music/
+plugins/
+logs/
 __pycache__/
 *.pyc
 .git/
+.cache

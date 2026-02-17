@@ -30,10 +30,10 @@ song.*
 music/*.tmp
 music/*.mp3
 music/*.webm
-music/ 
+music/
 music/large_file.mp4
 
-# Python egg 
+# Python egg
 *.egg
 *.egg-info/
 dist/
@@ -73,9 +73,9 @@ coverage.xml
 # Profiling data
 .prof
 
-# Docker
-*.dockerfile
-docker-compose*.yml
+# Lavalink
+plugins/
+logs/
 
 # AWS SAM
 .aws-sam/

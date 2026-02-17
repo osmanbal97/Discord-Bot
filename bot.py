@@ -1,18 +1,15 @@
 import asyncio
 import logging
 import os
-import random
-from time import time
+from typing import cast
 
 import aiohttp
 import discord
-import spotipy
-import yt_dlp
+import wavelink
 from aiohttp import web
 from discord.ext import commands
 from discord.ui import Button, View
 from dotenv import load_dotenv
-from spotipy.oauth2 import SpotifyClientCredentials
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -22,14 +19,8 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-
-sp = spotipy.Spotify(
-    auth_manager=SpotifyClientCredentials(
-        client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET
-    )
-)
+LAVALINK_URI = os.getenv("LAVALINK_URI", "http://localhost:2333")
+LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
 
 intents = discord.Intents.default()
 intents.voice_states = True
@@ -38,127 +29,48 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.remove_command("help")
 
-queue = []
-voice_client = None
-standby_task = None
-current_message = None  # Track current song message
 STANDBY_TIMEOUT = 900
-is_paused = False
-is_shuffled = False
-is_looping = False
-MAX_FILES = 10
-MUSIC_DIR = "music"
-
-youtube_cache = {}
-CACHE_TTL = 3600
+standby_tasks: dict[int, asyncio.Task] = {}
+current_messages: dict[int, discord.Message] = {}
+is_looping: dict[int, bool] = {}
+is_shuffled: dict[int, bool] = {}
 
 
-def setup_music_directory():
-    os.makedirs(MUSIC_DIR, exist_ok=True)
-
-
-def get_youtube_url(search_query):
-    if search_query in youtube_cache:
-        cached_url, timestamp = youtube_cache[search_query]
-        if time() - timestamp < CACHE_TTL:
-            logger.info(f"Cache hit for query: {search_query}")
-            return cached_url
-        else:
-            logger.info(f"Cache expired for query: {search_query}")
-            del youtube_cache[search_query]
-
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "default_search": "ytsearch",
-        "extract_flat": True,
-        "limit": 1,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(search_query, download=False)
-            if result and "entries" in result:
-                url = result["entries"][0]["url"]
-                duration = result["entries"][0].get("duration")
-                thumbnail = result["entries"][0].get("thumbnail")
-            elif "url" in result:
-                url = result["url"]
-                duration = result.get("duration")
-                thumbnail = result.get("thumbnail")
-            else:
-                return None
-
-            youtube_cache[search_query] = (url, time())
-            logger.info(f"Added to cache: {search_query}")
-            return url, duration, thumbnail
-    except Exception as e:
-        logger.error(f"Error getting YouTube URL: {e}")
-        return None
-
-
-def get_spotify_type(url):
-    if "playlist" in url:
-        return "playlist"
-    elif "track" in url:
-        return "track"
+def get_player(ctx_or_interaction) -> wavelink.Player | None:
+    if isinstance(ctx_or_interaction, commands.Context):
+        guild = ctx_or_interaction.guild
+    else:
+        guild = ctx_or_interaction.guild
+    if guild and guild.voice_client:
+        return cast(wavelink.Player, guild.voice_client)
     return None
 
 
-def clean_old_files():
-    try:
-        mp3_files = [f for f in os.listdir(MUSIC_DIR) if f.endswith(".mp3")]
-        if len(mp3_files) >= MAX_FILES:
-            mp3_files.sort(key=lambda x: os.path.getctime(os.path.join(MUSIC_DIR, x)))
-            for file in mp3_files[: -MAX_FILES + 1]:
-                os.remove(os.path.join(MUSIC_DIR, file))
-    except Exception as e:
-        logger.error(f"Error cleaning files: {e}")
+def format_duration(ms: int) -> str:
+    seconds = ms // 1000
+    minutes = seconds // 60
+    seconds = seconds % 60
+    return f"{minutes}:{seconds:02d}"
 
 
-def download_song(url, track_name):
-    try:
-        song_path = f"{MUSIC_DIR}/{track_name}.mp3"
-        if os.path.exists(song_path):
-            logger.info(f"Dosya zaten mevcut: {song_path}")
-            return song_path
-
-        clean_old_files()
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "320",
-                }
-            ],
-            "outtmpl": f"{MUSIC_DIR}/{track_name}.%(ext)s",
-            "quiet": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        return song_path
-    except Exception as e:
-        logger.error(f"Error downloading song: {e}")
-        if track_name in youtube_cache:
-            del youtube_cache[track_name]
-        return None
-
-
-async def standby(ctx):
-    global voice_client
+async def standby(guild_id: int):
     await asyncio.sleep(STANDBY_TIMEOUT)
-    if voice_client and voice_client.is_connected() and not voice_client.is_playing():
-        await voice_client.disconnect()
-        await ctx.send("15 dakika boyunca hareketsiz kaldım, bu yüzden ayrılıyorum.")
+    guild = bot.get_guild(guild_id)
+    if guild and guild.voice_client:
+        player = cast(wavelink.Player, guild.voice_client)
+        if not player.playing:
+            channel = player.home if hasattr(player, "home") else None
+            await player.disconnect()
+            if channel:
+                await channel.send(
+                    "15 dakika boyunca hareketsiz kaldım, bu yüzden ayrılıyorum."
+                )
 
 
-async def reset_standby(ctx):
-    global standby_task
-    if standby_task:
-        standby_task.cancel()
-    standby_task = asyncio.create_task(standby(ctx))
+async def reset_standby(guild_id: int):
+    if guild_id in standby_tasks:
+        standby_tasks[guild_id].cancel()
+    standby_tasks[guild_id] = asyncio.create_task(standby(guild_id))
 
 
 class MusicControls(View):
@@ -167,10 +79,10 @@ class MusicControls(View):
 
     @discord.ui.button(label="Skip", style=discord.ButtonStyle.red)
     async def skip(self, interaction: discord.Interaction, button: Button):
-        if voice_client and voice_client.is_playing():
-            voice_client.stop()
+        player = get_player(interaction)
+        if player and player.playing:
+            await player.skip(force=True)
             await interaction.response.send_message("Şarkı atlandı!", delete_after=2)
-            await play_next_song(interaction)
         else:
             await interaction.response.send_message(
                 "Şu anda çalan bir şarkı yok.", delete_after=5
@@ -178,27 +90,21 @@ class MusicControls(View):
 
     @discord.ui.button(label="Oynat/Duraklat", style=discord.ButtonStyle.blurple)
     async def pause_resume(self, interaction: discord.Interaction, button: Button):
-        global is_paused, current_message
-        if voice_client and voice_client.is_playing() and not is_paused:
-            voice_client.pause()
-            is_paused = True
-            if current_message:
-                embed = current_message.embeds[0]
-                embed.set_field_at(0, name="Status", value="⏸️ Paused", inline=True)
-                await current_message.edit(embed=embed)
-            await interaction.response.send_message(
-                "Şarkı duraklatıldı.", delete_after=5
-            )
-        elif voice_client and is_paused:
-            voice_client.resume()
-            is_paused = False
-            if current_message:
-                embed = current_message.embeds[0]
-                embed.set_field_at(0, name="Status", value="▶️ Playing", inline=True)
-                await current_message.edit(embed=embed)
-            await interaction.response.send_message(
-                "Şarkı devam ediyor.", delete_after=5
-            )
+        player = get_player(interaction)
+        if player and player.playing:
+            await player.pause(not player.paused)
+            guild_id = interaction.guild.id
+            if guild_id in current_messages:
+                try:
+                    msg = current_messages[guild_id]
+                    embed = msg.embeds[0]
+                    status = "⏸️ Paused" if player.paused else "▶️ Playing"
+                    embed.set_field_at(0, name="Status", value=status, inline=True)
+                    await msg.edit(embed=embed)
+                except Exception:
+                    pass
+            state = "duraklatıldı" if player.paused else "devam ediyor"
+            await interaction.response.send_message(f"Şarkı {state}.", delete_after=5)
         else:
             await interaction.response.send_message(
                 "Şu anda çalan bir şarkı yok.", delete_after=5
@@ -206,16 +112,17 @@ class MusicControls(View):
 
     @discord.ui.button(label="Durdur", style=discord.ButtonStyle.grey)
     async def stop(self, interaction: discord.Interaction, button: Button):
-        global voice_client, queue, current_message
-        if voice_client and voice_client.is_connected():
-            if voice_client.is_playing():
-                voice_client.stop()
-            queue.clear()
-            await voice_client.disconnect()
-            if current_message:
-                await current_message.delete()
-                current_message = None
-            voice_client = None
+        player = get_player(interaction)
+        if player and player.connected:
+            player.queue.clear()
+            await player.disconnect()
+            guild_id = interaction.guild.id
+            if guild_id in current_messages:
+                try:
+                    await current_messages[guild_id].delete()
+                except Exception:
+                    pass
+                del current_messages[guild_id]
             await interaction.response.send_message(
                 "Müzik durduruldu ve bağlantı kesildi."
             )
@@ -226,20 +133,24 @@ class MusicControls(View):
 
     @discord.ui.button(label="Siradakiler", style=discord.ButtonStyle.green)
     async def queue_list(self, interaction: discord.Interaction, button: Button):
-        if not queue:
+        player = get_player(interaction)
+        if not player or player.queue.is_empty:
             await interaction.response.send_message(
                 "Kuyruk şu anda boş.", delete_after=5
             )
             return
-        queue_str = "\n".join([f"{i + 1}. {song}" for i, song in enumerate(queue)])
+        queue_str = "\n".join(
+            [f"{i + 1}. {track.title}" for i, track in enumerate(player.queue)]
+        )
         await interaction.response.send_message(
             f"Şarkı Kuyruğu:\n{queue_str}", delete_after=10
         )
 
     @discord.ui.button(label="Sirayi Temizle", style=discord.ButtonStyle.red)
     async def clear(self, interaction: discord.Interaction, button: Button):
-        global queue
-        queue.clear()
+        player = get_player(interaction)
+        if player:
+            player.queue.clear()
         await interaction.response.send_message("Kuyruk temizlendi.", delete_after=5)
 
 
@@ -249,81 +160,88 @@ class ExtraControls(View):
 
     @discord.ui.button(label="Loop", style=discord.ButtonStyle.blurple)
     async def loop(self, interaction: discord.Interaction, button: Button):
-        global is_looping
-        is_looping = not is_looping
-        state = "açık" if is_looping else "kapalı"
+        guild_id = interaction.guild.id
+        player = get_player(interaction)
+        if player:
+            current = is_looping.get(guild_id, False)
+            is_looping[guild_id] = not current
+            if is_looping[guild_id]:
+                player.queue.mode = wavelink.QueueMode.loop
+            else:
+                player.queue.mode = wavelink.QueueMode.normal
+        state = "açık" if is_looping.get(guild_id, False) else "kapalı"
         await interaction.response.send_message(f"Döngü modu {state}.", delete_after=5)
 
     @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.blurple)
     async def shuffle(self, interaction: discord.Interaction, button: Button):
-        global is_shuffled
-        is_shuffled = not is_shuffled
-        if is_shuffled and queue:
-            random.shuffle(queue)
-        state = "açık" if is_shuffled else "kapalı"
+        guild_id = interaction.guild.id
+        player = get_player(interaction)
+        current = is_shuffled.get(guild_id, False)
+        is_shuffled[guild_id] = not current
+        if is_shuffled[guild_id] and player and not player.queue.is_empty:
+            player.queue.shuffle()
+        state = "açık" if is_shuffled[guild_id] else "kapalı"
         await interaction.response.send_message(
             f"Karıştırma modu {state}.", delete_after=5
         )
 
     @discord.ui.button(label="Durum", style=discord.ButtonStyle.green)
     async def status(self, interaction: discord.Interaction, button: Button):
-        if not voice_client or not voice_client.is_connected():
+        player = get_player(interaction)
+        if not player or not player.connected:
             await interaction.response.send_message(
                 "Şu anda bir ses kanalına bağlı değilim.", delete_after=5
             )
             return
+        guild_id = interaction.guild.id
         status_msg = [
-            f"Bağlı kanal: {voice_client.channel.name}",
-            f"Çalıyor: {voice_client.is_playing()}",
-            f"Duraklatıldı: {is_paused}",
-            f"Kuyrukta {len(queue)} şarkı var",
-            f"Karıştırılmış: {is_shuffled}",
-            f"Döngü: {is_looping}",
-            f"Ses seviyesi: {int(voice_client.source.volume * 100) if voice_client and voice_client.source else 50}%",
+            f"Bağlı kanal: {player.channel.name}",
+            f"Çalıyor: {player.playing}",
+            f"Duraklatıldı: {player.paused}",
+            f"Kuyrukta {player.queue.count} şarkı var",
+            f"Karıştırılmış: {is_shuffled.get(guild_id, False)}",
+            f"Döngü: {is_looping.get(guild_id, False)}",
+            f"Ses seviyesi: {player.volume}%",
         ]
         await interaction.response.send_message("\n".join(status_msg), delete_after=10)
 
     @discord.ui.button(label="Ses Arttir", style=discord.ButtonStyle.grey)
     async def volume_up(self, interaction: discord.Interaction, button: Button):
-        if not voice_client or not voice_client.is_playing():
+        player = get_player(interaction)
+        if not player or not player.playing:
             await interaction.response.send_message(
                 "Şu anda müzik çalmıyor.", delete_after=5
             )
             return
-        current_volume = int(voice_client.source.volume * 100)
-        new_volume = min(100, current_volume + 10)
-        voice_client.source.volume = new_volume / 100
+        new_volume = min(100, player.volume + 10)
+        await player.set_volume(new_volume)
         await interaction.response.send_message(
             f"Ses seviyesi {new_volume}% olarak ayarlandı.", delete_after=5
         )
 
     @discord.ui.button(label="Ses Dusur", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: Button):
-        if not voice_client or not voice_client.is_playing():
+        player = get_player(interaction)
+        if not player or not player.playing:
             await interaction.response.send_message(
                 "Şu anda müzik çalmıyor.", delete_after=5
             )
             return
-        current_volume = int(voice_client.source.volume * 100)
-        new_volume = max(0, current_volume - 10)
-        voice_client.source.volume = new_volume / 100
+        new_volume = max(0, player.volume - 10)
+        await player.set_volume(new_volume)
         await interaction.response.send_message(
             f"Ses seviyesi {new_volume}% olarak ayarlandı.", delete_after=5
         )
 
 
 class SearchView(View):
-    def __init__(self, search_results, ctx):
+    def __init__(self, search_results: list[wavelink.Playable], ctx):
         super().__init__(timeout=60)
         self.search_results = search_results
         self.ctx = ctx
 
-        for i, result in enumerate(search_results[:5], 1):
-            title = (
-                result["title"][:50] + "..."
-                if len(result["title"]) > 50
-                else result["title"]
-            )
+        for i, track in enumerate(search_results[:5], 1):
+            title = track.title[:50] + "..." if len(track.title) > 50 else track.title
             button = Button(
                 label=f"{i}. {title}",
                 style=discord.ButtonStyle.blurple,
@@ -340,159 +258,135 @@ class SearchView(View):
             return
 
         choice = int(interaction.data["custom_id"]) - 1
-        selected_song = self.search_results[choice]["title"]
-        queue.append(selected_song)
-        logger.info(f"{selected_song} kuyruğa eklendi.")
+        selected_track = self.search_results[choice]
 
-        await interaction.response.send_message(f"{selected_song} kuyruğa eklendi.")
-        if not voice_client or not voice_client.is_playing():
-            await play_next_song(self.ctx)
+        player = get_player(interaction)
+        if player:
+            await player.queue.put_wait(selected_track)
+            await interaction.response.send_message(
+                f"{selected_track.title} kuyruğa eklendi."
+            )
+            if not player.playing:
+                await player.play(player.queue.get(), volume=30)
         self.stop()
 
 
-async def play_next_song(ctx_or_interaction):
-    global voice_client, queue, is_looping, current_message
+async def send_now_playing(player: wavelink.Player, track: wavelink.Playable):
+    guild_id = player.guild.id
 
-    if current_message:
+    if guild_id in current_messages:
         try:
-            await current_message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting previous message: {e}")
+            await current_messages[guild_id].delete()
+        except Exception:
+            pass
 
-    if queue:
-        next_song_name = queue.pop(0)
-        result = get_youtube_url(next_song_name)
-        if result:
-            youtube_url, duration, thumbnail = result
-            download_msg = await (
-                ctx_or_interaction.send(f"Downloading: {next_song_name}")
-                if isinstance(ctx_or_interaction, commands.Context)
-                else ctx_or_interaction.followup.send(f"Downloading: {next_song_name}")
+    embed = discord.Embed(
+        title="Now Playing",
+        description=track.title,
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Status", value="▶️ Playing", inline=True)
+    embed.add_field(
+        name="Queue", value=f"{player.queue.count} songs remaining", inline=True
+    )
+    if track.length:
+        embed.add_field(
+            name="Duration", value=format_duration(track.length), inline=True
+        )
+    if track.artwork:
+        embed.set_thumbnail(url=track.artwork)
+    if track.author:
+        embed.add_field(name="Artist", value=track.author, inline=True)
+    embed.set_footer(text="Use controls below to manage playback")
+
+    if hasattr(player, "home") and player.home:
+        current_messages[guild_id] = await player.home.send(
+            embed=embed, view=MusicControls()
+        )
+
+
+@bot.event
+async def on_wavelink_node_ready(payload: wavelink.NodeReadyEventPayload):
+    logger.info(
+        f"Wavelink node connected: {payload.node!r} | Resumed: {payload.resumed}"
+    )
+
+
+@bot.event
+async def on_wavelink_track_start(payload: wavelink.TrackStartEventPayload):
+    player = payload.player
+    if player:
+        await send_now_playing(player, payload.track)
+        await reset_standby(player.guild.id)
+
+
+@bot.event
+async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
+    player = payload.player
+    if not player:
+        return
+
+    if player.queue.is_empty:
+        guild_id = player.guild.id
+        if hasattr(player, "home") and player.home:
+            embed = discord.Embed(
+                title="Queue Empty",
+                description="No more songs in queue",
+                color=discord.Color.red(),
             )
+            if guild_id in current_messages:
+                try:
+                    await current_messages[guild_id].delete()
+                except Exception:
+                    pass
+            current_messages[guild_id] = await player.home.send(embed=embed)
+        await reset_standby(guild_id)
 
-            song_path = download_song(youtube_url, next_song_name)
-            await download_msg.delete()
 
-            if song_path and os.path.exists(song_path):
-                source = discord.FFmpegPCMAudio(song_path)
-                source = discord.PCMVolumeTransformer(source, volume=0.5)
-
-                embed = discord.Embed(
-                    title="Now Playing",
-                    description=next_song_name,
-                    color=discord.Color.blue(),
-                )
-                embed.add_field(name="Status", value="▶️ Playing", inline=True)
-                embed.add_field(
-                    name="Queue", value=f"{len(queue)} songs remaining", inline=True
-                )
-                if duration:
-                    embed.add_field(
-                        name="Duration",
-                        value=f"{duration // 60}:{duration % 60:02d}",
-                        inline=True,
-                    )
-                if thumbnail:
-                    embed.set_thumbnail(url=thumbnail)
-                embed.set_footer(text="Use controls below to manage playback")
-
-                if isinstance(ctx_or_interaction, commands.Context):
-                    current_message = await ctx_or_interaction.send(
-                        embed=embed, view=MusicControls()
-                    )
-                else:
-                    current_message = await ctx_or_interaction.followup.send(
-                        embed=embed, view=MusicControls()
-                    )
-
-                voice_client.play(
-                    source,
-                    after=lambda e: asyncio.run_coroutine_threadsafe(
-                        play_next_song(ctx_or_interaction), bot.loop
-                    ),
-                )
-                if is_looping:
-                    queue.append(next_song_name)
-            else:
-                logger.error(f"{next_song_name} indirilemedi.")
-                await play_next_song(ctx_or_interaction)
-        else:
-            logger.error(f"{next_song_name} bulunamadı.")
-            await play_next_song(ctx_or_interaction)
-    else:
-        embed = discord.Embed(
-            title="Queue Empty",
-            description="No more songs in queue",
-            color=discord.Color.red(),
-        )
-        if isinstance(ctx_or_interaction, commands.Context):
-            current_message = await ctx_or_interaction.send(embed=embed)
-        else:
-            current_message = await ctx_or_interaction.followup.send(embed=embed)
-        await reset_standby(
-            ctx_or_interaction.channel
-            if isinstance(ctx_or_interaction, commands.Context)
-            else ctx_or_interaction.channel
-        )
+async def resolve_spotify(url_or_query: str) -> list[wavelink.Playable]:
+    """Search via wavelink which handles Spotify through LavaSrc plugin."""
+    tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
+    if isinstance(tracks, wavelink.Playlist):
+        return list(tracks.tracks)
+    return list(tracks) if tracks else []
 
 
 @bot.command()
 async def play(ctx, *, url_or_query: str):
-    global voice_client, current_message
     try:
         if not ctx.author.voice or not ctx.author.voice.channel:
             await ctx.send("Önce bir ses kanalına gir.")
             return
 
-        voice_channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            voice_client = await voice_channel.connect()
-
-        if "spotify.com" in url_or_query:
-            spotify_type = get_spotify_type(url_or_query)
-
-            if spotify_type == "playlist":
-                playlist_id = url_or_query.split("/")[-1].split("?")[0]
-                results = sp.playlist_tracks(playlist_id)
-                tracks = results["items"]
-
-                if not tracks:
-                    await ctx.send("Playlist'te şarkı bulunamadı.")
-                    return
-
-                first_song = True
-                for item in tracks:
-                    track = item["track"]
-                    track_name = f"{track['name']} - {track['artists'][0]['name']}"
-                    queue.append(track_name)
-                    logger.info(f"{track_name} kuyruğa eklendi.")
-                    if first_song and not voice_client.is_playing():
-                        first_song = False
-                        await play_next_song(ctx)
-
-            elif spotify_type == "track":
-                track_id = url_or_query.split("/")[-1].split("?")[0]
-                track = sp.track(track_id)
-                track_name = f"{track['name']} - {track['artists'][0]['name']}"
-                queue.append(track_name)
-                logger.info(f"{track_name} kuyruğa eklendi.")
-                if not voice_client.is_playing():
-                    await play_next_song(ctx)
-
-            else:
-                await ctx.send("Geçersiz Spotify bağlantısı.")
-                return
+        player: wavelink.Player
+        if not ctx.voice_client:
+            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
         else:
-            if url_or_query.startswith(("http://", "https://")):
-                queue.append(url_or_query)
-            else:
-                queue.append(url_or_query)
-            logger.info(f"{url_or_query} kuyruğa eklendi.")
-            if not voice_client.is_playing():
-                await play_next_song(ctx)
+            player = cast(wavelink.Player, ctx.voice_client)
+
+        if not hasattr(player, "home"):
+            player.home = ctx.channel
+
+        tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
+        if not tracks:
+            await ctx.send("Şarkı bulunamadı.")
+            return
+
+        if isinstance(tracks, wavelink.Playlist):
+            added = await player.queue.put_wait(tracks)
+            await ctx.send(
+                f"**{tracks.name}** playlistinden {added} şarkı kuyruğa eklendi."
+            )
+        else:
+            track = tracks[0]
+            await player.queue.put_wait(track)
+            await ctx.send(f"**{track.title}** kuyruğa eklendi.")
+
+        if not player.playing:
+            await player.play(player.queue.get(), volume=30)
 
         await ctx.send("Extra controls:", view=ExtraControls())
-        await reset_standby(ctx)
+        await reset_standby(ctx.guild.id)
 
     except Exception as e:
         logger.error(f"Error in play command: {e}")
@@ -501,46 +395,37 @@ async def play(ctx, *, url_or_query: str):
 
 @bot.command()
 async def playnext(ctx, *, url_or_query: str):
-    global voice_client
     try:
         if not ctx.author.voice or not ctx.author.voice.channel:
             await ctx.send("Önce bir ses kanalına gir.")
             return
 
-        voice_channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            voice_client = await voice_channel.connect()
-
-        if "spotify.com" in url_or_query:
-            spotify_type = get_spotify_type(url_or_query)
-
-            if spotify_type == "playlist":
-                await ctx.send("Bu komut sadece tekli şarkılar için kullanılabilir.")
-                return
-
-            elif spotify_type == "track":
-                track_id = url_or_query.split("/")[-1].split("?")[0]
-                track = sp.track(track_id)
-                track_name = f"{track['name']} - {track['artists'][0]['name']}"
-                queue.insert(0, track_name)
-                logger.info(f"{track_name} kuyruğun başına eklendi.")
-                if not voice_client.is_playing():
-                    await play_next_song(ctx)
-
-            else:
-                await ctx.send("Geçersiz Spotify bağlantısı.")
-                return
+        player: wavelink.Player
+        if not ctx.voice_client:
+            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
         else:
-            if url_or_query.startswith(("http://", "https://")):
-                queue.insert(0, url_or_query)
-            else:
-                queue.insert(0, url_or_query)
-            logger.info(f"{url_or_query} kuyruğun başına eklendi.")
-            if not voice_client.is_playing():
-                await play_next_song(ctx)
+            player = cast(wavelink.Player, ctx.voice_client)
 
-        await ctx.send(f"{url_or_query} kuyruğun başına eklendi.")
-        await reset_standby(ctx)
+        if not hasattr(player, "home"):
+            player.home = ctx.channel
+
+        tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
+        if not tracks:
+            await ctx.send("Şarkı bulunamadı.")
+            return
+
+        if isinstance(tracks, wavelink.Playlist):
+            await ctx.send("Bu komut sadece tekli şarkılar için kullanılabilir.")
+            return
+
+        track = tracks[0]
+        player.queue.put_at(0, track)
+        await ctx.send(f"**{track.title}** kuyruğun başına eklendi.")
+
+        if not player.playing:
+            await player.play(player.queue.get(), volume=30)
+
+        await reset_standby(ctx.guild.id)
 
     except Exception as e:
         logger.error(f"Error in playnext command: {e}")
@@ -549,46 +434,34 @@ async def playnext(ctx, *, url_or_query: str):
 
 @bot.command()
 async def playnow(ctx, *, url_or_query: str):
-    global voice_client
     try:
         if not ctx.author.voice or not ctx.author.voice.channel:
             await ctx.send("Önce bir ses kanalına gir.")
             return
 
-        voice_channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            voice_client = await voice_channel.connect()
-        elif voice_client.is_playing():
-            voice_client.stop()
-
-        if "spotify.com" in url_or_query:
-            spotify_type = get_spotify_type(url_or_query)
-
-            if spotify_type == "playlist":
-                await ctx.send("Bu komut sadece tekli şarkılar için kullanılabilir.")
-                return
-
-            elif spotify_type == "track":
-                track_id = url_or_query.split("/")[-1].split("?")[0]
-                track = sp.track(track_id)
-                track_name = f"{track['name']} - {track['artists'][0]['name']}"
-                queue.insert(0, track_name)
-                logger.info(f"{track_name} hemen çalmak için eklendi.")
-                await play_next_song(ctx)
-
-            else:
-                await ctx.send("Geçersiz Spotify bağlantısı.")
-                return
+        player: wavelink.Player
+        if not ctx.voice_client:
+            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
         else:
-            if url_or_query.startswith(("http://", "https://")):
-                queue.insert(0, url_or_query)
-            else:
-                queue.insert(0, url_or_query)
-            logger.info(f"{url_or_query} hemen çalmak için eklendi.")
-            await play_next_song(ctx)
+            player = cast(wavelink.Player, ctx.voice_client)
 
+        if not hasattr(player, "home"):
+            player.home = ctx.channel
+
+        tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
+        if not tracks:
+            await ctx.send("Şarkı bulunamadı.")
+            return
+
+        if isinstance(tracks, wavelink.Playlist):
+            await ctx.send("Bu komut sadece tekli şarkılar için kullanılabilir.")
+            return
+
+        track = tracks[0]
+        await player.play(track, volume=30)
+        await ctx.send(f"**{track.title}** şimdi çalınıyor.")
         await ctx.send("Extra controls:", view=ExtraControls())
-        await reset_standby(ctx)
+        await reset_standby(ctx.guild.id)
 
     except Exception as e:
         logger.error(f"Error in playnow command: {e}")
@@ -603,59 +476,61 @@ async def controls(ctx):
 
 @bot.command()
 async def move(ctx, from_pos: int, to_pos: int):
+    player = get_player(ctx)
+    if not player or player.queue.is_empty:
+        await ctx.send("Kuyruk boş.")
+        return
     if (
-        not queue
-        or from_pos < 1
+        from_pos < 1
         or to_pos < 1
-        or from_pos > len(queue)
-        or to_pos > len(queue)
+        or from_pos > player.queue.count
+        or to_pos > player.queue.count
     ):
         await ctx.send("Geçersiz sıra numarası.")
         return
-    song = queue.pop(from_pos - 1)
-    queue.insert(to_pos - 1, song)
-    await ctx.send(f"{song} {to_pos}. sıraya taşındı.")
+    track = player.queue.peek(from_pos - 1)
+    player.queue.delete(from_pos - 1)
+    player.queue.put_at(to_pos - 1, track)
+    await ctx.send(f"{track.title} {to_pos}. sıraya taşındı.")
 
 
 @bot.command()
 async def remove(ctx, pos: int):
-    if not queue or pos < 1 or pos > len(queue):
+    player = get_player(ctx)
+    if not player or player.queue.is_empty:
+        await ctx.send("Kuyruk boş.")
+        return
+    if pos < 1 or pos > player.queue.count:
         await ctx.send("Geçersiz sıra numarası.")
         return
-    song = queue.pop(pos - 1)
-    await ctx.send(f"{song} kuyruktan silindi.")
+    track = player.queue.peek(pos - 1)
+    player.queue.delete(pos - 1)
+    await ctx.send(f"{track.title} kuyruktan silindi.")
 
 
 @bot.command()
 async def search(ctx, *, query: str):
     try:
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "noplaylist#pragma once": True,
-            "quiet": True,
-            "default_search": "ytsearch5",
-            "extract_flat": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(query, download=False)
-            if not result or "entries" not in result or not result["entries"]:
-                await ctx.send("Arama sonucunda şarkı bulunamadı.")
-                return
+        tracks: wavelink.Search = await wavelink.Playable.search(query)
+        if not tracks or isinstance(tracks, wavelink.Playlist):
+            await ctx.send("Arama sonucunda şarkı bulunamadı.")
+            return
 
-            search_results = result["entries"]
-            view = SearchView(search_results, ctx)
-            embed = discord.Embed(
-                title=f"'{query}' için Arama Sonuçları",
-                description="Aşağıdaki butonlardan birini seçerek şarkıyı kuyruğa ekleyebilirsiniz.",
-                color=discord.Color.green(),
+        results = list(tracks[:5])
+        view = SearchView(results, ctx)
+        embed = discord.Embed(
+            title=f"'{query}' için Arama Sonuçları",
+            description="Aşağıdaki butonlardan birini seçerek şarkıyı kuyruğa ekleyebilirsiniz.",
+            color=discord.Color.green(),
+        )
+        for i, track in enumerate(results, 1):
+            duration = format_duration(track.length) if track.length else "Bilinmiyor"
+            embed.add_field(
+                name=f"{i}. {track.title}",
+                value=f"Süre: {duration} | {track.author}",
+                inline=False,
             )
-            for i, entry in enumerate(search_results[:5], 1):
-                embed.add_field(
-                    name=f"{i}. {entry['title']}",
-                    value=f"Süre: {entry.get('duration', 'Bilinmiyor')} saniye",
-                    inline=False,
-                )
-            await ctx.send(embed=embed, view=view)
+        await ctx.send(embed=embed, view=view)
 
     except Exception as e:
         logger.error(f"Error in search command: {e}")
@@ -686,7 +561,7 @@ async def help(ctx):
     )
     embed.add_field(
         name="!search <şarkı adı>",
-        value="YouTube'da şarkı arar ve ilk 5 sonucu butonlarla listeler.\n**Örnek:**\n- `!search NTO Beyond Control`",
+        value="Şarkı arar ve ilk 5 sonucu butonlarla listeler.\n**Örnek:**\n- `!search NTO Beyond Control`",
         inline=False,
     )
     embed.add_field(
@@ -710,8 +585,20 @@ async def help(ctx):
 
 @bot.event
 async def on_ready():
-    setup_music_directory()
     logger.info(f"Bot {bot.user} olarak bağlandı!")
+
+
+async def setup_hook():
+    nodes = [
+        wavelink.Node(
+            uri=LAVALINK_URI,
+            password=LAVALINK_PASSWORD,
+        )
+    ]
+    await wavelink.Pool.connect(nodes=nodes, client=bot, cache_capacity=100)
+
+
+bot.setup_hook = setup_hook
 
 
 async def health_handler(request):
