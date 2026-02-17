@@ -1,17 +1,22 @@
-import discord
-from discord.ext import commands
-from discord.ui import Button, View
-import yt_dlp
-import spotipy
 import asyncio
-from spotipy.oauth2 import SpotifyClientCredentials
+import logging
 import os
 import random
-import logging
-from dotenv import load_dotenv
 from time import time
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import aiohttp
+import discord
+import spotipy
+import yt_dlp
+from aiohttp import web
+from discord.ext import commands
+from discord.ui import Button, View
+from dotenv import load_dotenv
+from spotipy.oauth2 import SpotifyClientCredentials
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -20,10 +25,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET
-))
+sp = spotipy.Spotify(
+    auth_manager=SpotifyClientCredentials(
+        client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET
+    )
+)
 
 intents = discord.Intents.default()
 intents.voice_states = True
@@ -46,8 +52,10 @@ MUSIC_DIR = "music"
 youtube_cache = {}
 CACHE_TTL = 3600
 
+
 def setup_music_directory():
     os.makedirs(MUSIC_DIR, exist_ok=True)
+
 
 def get_youtube_url(search_query):
     if search_query in youtube_cache:
@@ -60,33 +68,34 @@ def get_youtube_url(search_query):
             del youtube_cache[search_query]
 
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'default_search': 'ytsearch',
-        'extract_flat': True,
-        'limit': 1
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "default_search": "ytsearch",
+        "extract_flat": True,
+        "limit": 1,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             result = ydl.extract_info(search_query, download=False)
-            if result and 'entries' in result:
-                url = result['entries'][0]['url']
-                duration = result['entries'][0].get('duration')
-                thumbnail = result['entries'][0].get('thumbnail')
-            elif 'url' in result:
-                url = result['url']
-                duration = result.get('duration')
-                thumbnail = result.get('thumbnail')
+            if result and "entries" in result:
+                url = result["entries"][0]["url"]
+                duration = result["entries"][0].get("duration")
+                thumbnail = result["entries"][0].get("thumbnail")
+            elif "url" in result:
+                url = result["url"]
+                duration = result.get("duration")
+                thumbnail = result.get("thumbnail")
             else:
                 return None
-            
+
             youtube_cache[search_query] = (url, time())
             logger.info(f"Added to cache: {search_query}")
             return url, duration, thumbnail
     except Exception as e:
         logger.error(f"Error getting YouTube URL: {e}")
         return None
+
 
 def get_spotify_type(url):
     if "playlist" in url:
@@ -95,15 +104,17 @@ def get_spotify_type(url):
         return "track"
     return None
 
+
 def clean_old_files():
     try:
-        mp3_files = [f for f in os.listdir(MUSIC_DIR) if f.endswith('.mp3')]
+        mp3_files = [f for f in os.listdir(MUSIC_DIR) if f.endswith(".mp3")]
         if len(mp3_files) >= MAX_FILES:
             mp3_files.sort(key=lambda x: os.path.getctime(os.path.join(MUSIC_DIR, x)))
-            for file in mp3_files[:-MAX_FILES + 1]:
+            for file in mp3_files[: -MAX_FILES + 1]:
                 os.remove(os.path.join(MUSIC_DIR, file))
     except Exception as e:
         logger.error(f"Error cleaning files: {e}")
+
 
 def download_song(url, track_name):
     try:
@@ -114,14 +125,16 @@ def download_song(url, track_name):
 
         clean_old_files()
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-            'outtmpl': f'{MUSIC_DIR}/{track_name}.%(ext)s',
-            'quiet': True,
+            "format": "bestaudio/best",
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "320",
+                }
+            ],
+            "outtmpl": f"{MUSIC_DIR}/{track_name}.%(ext)s",
+            "quiet": True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -132,6 +145,7 @@ def download_song(url, track_name):
             del youtube_cache[track_name]
         return None
 
+
 async def standby(ctx):
     global voice_client
     await asyncio.sleep(STANDBY_TIMEOUT)
@@ -139,11 +153,13 @@ async def standby(ctx):
         await voice_client.disconnect()
         await ctx.send("15 dakika boyunca hareketsiz kaldım, bu yüzden ayrılıyorum.")
 
+
 async def reset_standby(ctx):
     global standby_task
     if standby_task:
         standby_task.cancel()
     standby_task = asyncio.create_task(standby(ctx))
+
 
 class MusicControls(View):
     def __init__(self):
@@ -156,7 +172,9 @@ class MusicControls(View):
             await interaction.response.send_message("Şarkı atlandı!", delete_after=2)
             await play_next_song(interaction)
         else:
-            await interaction.response.send_message("Şu anda çalan bir şarkı yok.", delete_after=5)
+            await interaction.response.send_message(
+                "Şu anda çalan bir şarkı yok.", delete_after=5
+            )
 
     @discord.ui.button(label="Oynat/Duraklat", style=discord.ButtonStyle.blurple)
     async def pause_resume(self, interaction: discord.Interaction, button: Button):
@@ -168,7 +186,9 @@ class MusicControls(View):
                 embed = current_message.embeds[0]
                 embed.set_field_at(0, name="Status", value="⏸️ Paused", inline=True)
                 await current_message.edit(embed=embed)
-            await interaction.response.send_message("Şarkı duraklatıldı.", delete_after=5)
+            await interaction.response.send_message(
+                "Şarkı duraklatıldı.", delete_after=5
+            )
         elif voice_client and is_paused:
             voice_client.resume()
             is_paused = False
@@ -176,9 +196,13 @@ class MusicControls(View):
                 embed = current_message.embeds[0]
                 embed.set_field_at(0, name="Status", value="▶️ Playing", inline=True)
                 await current_message.edit(embed=embed)
-            await interaction.response.send_message("Şarkı devam ediyor.", delete_after=5)
+            await interaction.response.send_message(
+                "Şarkı devam ediyor.", delete_after=5
+            )
         else:
-            await interaction.response.send_message("Şu anda çalan bir şarkı yok.", delete_after=5)
+            await interaction.response.send_message(
+                "Şu anda çalan bir şarkı yok.", delete_after=5
+            )
 
     @discord.ui.button(label="Durdur", style=discord.ButtonStyle.grey)
     async def stop(self, interaction: discord.Interaction, button: Button):
@@ -192,23 +216,32 @@ class MusicControls(View):
                 await current_message.delete()
                 current_message = None
             voice_client = None
-            await interaction.response.send_message("Müzik durduruldu ve bağlantı kesildi.")
+            await interaction.response.send_message(
+                "Müzik durduruldu ve bağlantı kesildi."
+            )
         else:
-            await interaction.response.send_message("Zaten bir ses kanalında değilim.", delete_after=5)
+            await interaction.response.send_message(
+                "Zaten bir ses kanalında değilim.", delete_after=5
+            )
 
     @discord.ui.button(label="Siradakiler", style=discord.ButtonStyle.green)
     async def queue_list(self, interaction: discord.Interaction, button: Button):
         if not queue:
-            await interaction.response.send_message("Kuyruk şu anda boş.", delete_after=5)
+            await interaction.response.send_message(
+                "Kuyruk şu anda boş.", delete_after=5
+            )
             return
-        queue_str = "\n".join([f"{i+1}. {song}" for i, song in enumerate(queue)])
-        await interaction.response.send_message(f"Şarkı Kuyruğu:\n{queue_str}", delete_after=10)
+        queue_str = "\n".join([f"{i + 1}. {song}" for i, song in enumerate(queue)])
+        await interaction.response.send_message(
+            f"Şarkı Kuyruğu:\n{queue_str}", delete_after=10
+        )
 
     @discord.ui.button(label="Sirayi Temizle", style=discord.ButtonStyle.red)
     async def clear(self, interaction: discord.Interaction, button: Button):
         global queue
         queue.clear()
         await interaction.response.send_message("Kuyruk temizlendi.", delete_after=5)
+
 
 class ExtraControls(View):
     def __init__(self):
@@ -228,12 +261,16 @@ class ExtraControls(View):
         if is_shuffled and queue:
             random.shuffle(queue)
         state = "açık" if is_shuffled else "kapalı"
-        await interaction.response.send_message(f"Karıştırma modu {state}.", delete_after=5)
+        await interaction.response.send_message(
+            f"Karıştırma modu {state}.", delete_after=5
+        )
 
     @discord.ui.button(label="Durum", style=discord.ButtonStyle.green)
     async def status(self, interaction: discord.Interaction, button: Button):
         if not voice_client or not voice_client.is_connected():
-            await interaction.response.send_message("Şu anda bir ses kanalına bağlı değilim.", delete_after=5)
+            await interaction.response.send_message(
+                "Şu anda bir ses kanalına bağlı değilim.", delete_after=5
+            )
             return
         status_msg = [
             f"Bağlı kanal: {voice_client.channel.name}",
@@ -242,29 +279,38 @@ class ExtraControls(View):
             f"Kuyrukta {len(queue)} şarkı var",
             f"Karıştırılmış: {is_shuffled}",
             f"Döngü: {is_looping}",
-            f"Ses seviyesi: {int(voice_client.source.volume * 100) if voice_client and voice_client.source else 50}%"
+            f"Ses seviyesi: {int(voice_client.source.volume * 100) if voice_client and voice_client.source else 50}%",
         ]
         await interaction.response.send_message("\n".join(status_msg), delete_after=10)
 
     @discord.ui.button(label="Ses Arttir", style=discord.ButtonStyle.grey)
     async def volume_up(self, interaction: discord.Interaction, button: Button):
         if not voice_client or not voice_client.is_playing():
-            await interaction.response.send_message("Şu anda müzik çalmıyor.", delete_after=5)
+            await interaction.response.send_message(
+                "Şu anda müzik çalmıyor.", delete_after=5
+            )
             return
         current_volume = int(voice_client.source.volume * 100)
         new_volume = min(100, current_volume + 10)
         voice_client.source.volume = new_volume / 100
-        await interaction.response.send_message(f"Ses seviyesi {new_volume}% olarak ayarlandı.", delete_after=5)
+        await interaction.response.send_message(
+            f"Ses seviyesi {new_volume}% olarak ayarlandı.", delete_after=5
+        )
 
     @discord.ui.button(label="Ses Dusur", style=discord.ButtonStyle.grey)
     async def volume_down(self, interaction: discord.Interaction, button: Button):
         if not voice_client or not voice_client.is_playing():
-            await interaction.response.send_message("Şu anda müzik çalmıyor.", delete_after=5)
+            await interaction.response.send_message(
+                "Şu anda müzik çalmıyor.", delete_after=5
+            )
             return
         current_volume = int(voice_client.source.volume * 100)
         new_volume = max(0, current_volume - 10)
         voice_client.source.volume = new_volume / 100
-        await interaction.response.send_message(f"Ses seviyesi {new_volume}% olarak ayarlandı.", delete_after=5)
+        await interaction.response.send_message(
+            f"Ses seviyesi {new_volume}% olarak ayarlandı.", delete_after=5
+        )
+
 
 class SearchView(View):
     def __init__(self, search_results, ctx):
@@ -273,65 +319,98 @@ class SearchView(View):
         self.ctx = ctx
 
         for i, result in enumerate(search_results[:5], 1):
-            title = result['title'][:50] + "..." if len(result['title']) > 50 else result['title']
-            button = Button(label=f"{i}. {title}", style=discord.ButtonStyle.blurple, custom_id=str(i))
+            title = (
+                result["title"][:50] + "..."
+                if len(result["title"]) > 50
+                else result["title"]
+            )
+            button = Button(
+                label=f"{i}. {title}",
+                style=discord.ButtonStyle.blurple,
+                custom_id=str(i),
+            )
             button.callback = self.button_callback
             self.add_item(button)
 
     async def button_callback(self, interaction: discord.Interaction):
         if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Bu arama sizin değil!", ephemeral=True)
+            await interaction.response.send_message(
+                "Bu arama sizin değil!", ephemeral=True
+            )
             return
 
-        choice = int(interaction.data['custom_id']) - 1
-        selected_song = self.search_results[choice]['title']
+        choice = int(interaction.data["custom_id"]) - 1
+        selected_song = self.search_results[choice]["title"]
         queue.append(selected_song)
         logger.info(f"{selected_song} kuyruğa eklendi.")
-        
+
         await interaction.response.send_message(f"{selected_song} kuyruğa eklendi.")
         if not voice_client or not voice_client.is_playing():
             await play_next_song(self.ctx)
         self.stop()
 
+
 async def play_next_song(ctx_or_interaction):
     global voice_client, queue, is_looping, current_message
-    
+
     if current_message:
         try:
             await current_message.delete()
         except Exception as e:
             logger.error(f"Error deleting previous message: {e}")
-    
+
     if queue:
         next_song_name = queue.pop(0)
         result = get_youtube_url(next_song_name)
         if result:
             youtube_url, duration, thumbnail = result
-            download_msg = await (ctx_or_interaction.send(f"Downloading: {next_song_name}") if isinstance(ctx_or_interaction, commands.Context) 
-                                else ctx_or_interaction.followup.send(f"Downloading: {next_song_name}"))
-            
+            download_msg = await (
+                ctx_or_interaction.send(f"Downloading: {next_song_name}")
+                if isinstance(ctx_or_interaction, commands.Context)
+                else ctx_or_interaction.followup.send(f"Downloading: {next_song_name}")
+            )
+
             song_path = download_song(youtube_url, next_song_name)
             await download_msg.delete()
-            
+
             if song_path and os.path.exists(song_path):
                 source = discord.FFmpegPCMAudio(song_path)
                 source = discord.PCMVolumeTransformer(source, volume=0.5)
-                
-                embed = discord.Embed(title="Now Playing", description=next_song_name, color=discord.Color.blue())
+
+                embed = discord.Embed(
+                    title="Now Playing",
+                    description=next_song_name,
+                    color=discord.Color.blue(),
+                )
                 embed.add_field(name="Status", value="▶️ Playing", inline=True)
-                embed.add_field(name="Queue", value=f"{len(queue)} songs remaining", inline=True)
+                embed.add_field(
+                    name="Queue", value=f"{len(queue)} songs remaining", inline=True
+                )
                 if duration:
-                    embed.add_field(name="Duration", value=f"{duration//60}:{duration%60:02d}", inline=True)
+                    embed.add_field(
+                        name="Duration",
+                        value=f"{duration // 60}:{duration % 60:02d}",
+                        inline=True,
+                    )
                 if thumbnail:
                     embed.set_thumbnail(url=thumbnail)
                 embed.set_footer(text="Use controls below to manage playback")
-                
+
                 if isinstance(ctx_or_interaction, commands.Context):
-                    current_message = await ctx_or_interaction.send(embed=embed, view=MusicControls())
+                    current_message = await ctx_or_interaction.send(
+                        embed=embed, view=MusicControls()
+                    )
                 else:
-                    current_message = await ctx_or_interaction.followup.send(embed=embed, view=MusicControls())
-                
-                voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(ctx_or_interaction), bot.loop))
+                    current_message = await ctx_or_interaction.followup.send(
+                        embed=embed, view=MusicControls()
+                    )
+
+                voice_client.play(
+                    source,
+                    after=lambda e: asyncio.run_coroutine_threadsafe(
+                        play_next_song(ctx_or_interaction), bot.loop
+                    ),
+                )
                 if is_looping:
                     queue.append(next_song_name)
             else:
@@ -341,12 +420,21 @@ async def play_next_song(ctx_or_interaction):
             logger.error(f"{next_song_name} bulunamadı.")
             await play_next_song(ctx_or_interaction)
     else:
-        embed = discord.Embed(title="Queue Empty", description="No more songs in queue", color=discord.Color.red())
+        embed = discord.Embed(
+            title="Queue Empty",
+            description="No more songs in queue",
+            color=discord.Color.red(),
+        )
         if isinstance(ctx_or_interaction, commands.Context):
             current_message = await ctx_or_interaction.send(embed=embed)
         else:
             current_message = await ctx_or_interaction.followup.send(embed=embed)
-        await reset_standby(ctx_or_interaction.channel if isinstance(ctx_or_interaction, commands.Context) else ctx_or_interaction.channel)
+        await reset_standby(
+            ctx_or_interaction.channel
+            if isinstance(ctx_or_interaction, commands.Context)
+            else ctx_or_interaction.channel
+        )
+
 
 @bot.command()
 async def play(ctx, *, url_or_query: str):
@@ -362,26 +450,26 @@ async def play(ctx, *, url_or_query: str):
 
         if "spotify.com" in url_or_query:
             spotify_type = get_spotify_type(url_or_query)
-            
+
             if spotify_type == "playlist":
                 playlist_id = url_or_query.split("/")[-1].split("?")[0]
                 results = sp.playlist_tracks(playlist_id)
-                tracks = results['items']
-                
+                tracks = results["items"]
+
                 if not tracks:
                     await ctx.send("Playlist'te şarkı bulunamadı.")
                     return
 
                 first_song = True
                 for item in tracks:
-                    track = item['track']
+                    track = item["track"]
                     track_name = f"{track['name']} - {track['artists'][0]['name']}"
                     queue.append(track_name)
                     logger.info(f"{track_name} kuyruğa eklendi.")
                     if first_song and not voice_client.is_playing():
                         first_song = False
                         await play_next_song(ctx)
-            
+
             elif spotify_type == "track":
                 track_id = url_or_query.split("/")[-1].split("?")[0]
                 track = sp.track(track_id)
@@ -390,12 +478,12 @@ async def play(ctx, *, url_or_query: str):
                 logger.info(f"{track_name} kuyruğa eklendi.")
                 if not voice_client.is_playing():
                     await play_next_song(ctx)
-            
+
             else:
                 await ctx.send("Geçersiz Spotify bağlantısı.")
                 return
         else:
-            if url_or_query.startswith(('http://', 'https://')):
+            if url_or_query.startswith(("http://", "https://")):
                 queue.append(url_or_query)
             else:
                 queue.append(url_or_query)
@@ -409,6 +497,7 @@ async def play(ctx, *, url_or_query: str):
     except Exception as e:
         logger.error(f"Error in play command: {e}")
         await ctx.send(f"Bir hata oluştu: {str(e)}")
+
 
 @bot.command()
 async def playnext(ctx, *, url_or_query: str):
@@ -424,11 +513,11 @@ async def playnext(ctx, *, url_or_query: str):
 
         if "spotify.com" in url_or_query:
             spotify_type = get_spotify_type(url_or_query)
-            
+
             if spotify_type == "playlist":
                 await ctx.send("Bu komut sadece tekli şarkılar için kullanılabilir.")
                 return
-            
+
             elif spotify_type == "track":
                 track_id = url_or_query.split("/")[-1].split("?")[0]
                 track = sp.track(track_id)
@@ -437,12 +526,12 @@ async def playnext(ctx, *, url_or_query: str):
                 logger.info(f"{track_name} kuyruğun başına eklendi.")
                 if not voice_client.is_playing():
                     await play_next_song(ctx)
-            
+
             else:
                 await ctx.send("Geçersiz Spotify bağlantısı.")
                 return
         else:
-            if url_or_query.startswith(('http://', 'https://')):
+            if url_or_query.startswith(("http://", "https://")):
                 queue.insert(0, url_or_query)
             else:
                 queue.insert(0, url_or_query)
@@ -456,6 +545,7 @@ async def playnext(ctx, *, url_or_query: str):
     except Exception as e:
         logger.error(f"Error in playnext command: {e}")
         await ctx.send(f"Bir hata oluştu: {str(e)}")
+
 
 @bot.command()
 async def playnow(ctx, *, url_or_query: str):
@@ -473,11 +563,11 @@ async def playnow(ctx, *, url_or_query: str):
 
         if "spotify.com" in url_or_query:
             spotify_type = get_spotify_type(url_or_query)
-            
+
             if spotify_type == "playlist":
                 await ctx.send("Bu komut sadece tekli şarkılar için kullanılabilir.")
                 return
-            
+
             elif spotify_type == "track":
                 track_id = url_or_query.split("/")[-1].split("?")[0]
                 track = sp.track(track_id)
@@ -485,12 +575,12 @@ async def playnow(ctx, *, url_or_query: str):
                 queue.insert(0, track_name)
                 logger.info(f"{track_name} hemen çalmak için eklendi.")
                 await play_next_song(ctx)
-            
+
             else:
                 await ctx.send("Geçersiz Spotify bağlantısı.")
                 return
         else:
-            if url_or_query.startswith(('http://', 'https://')):
+            if url_or_query.startswith(("http://", "https://")):
                 queue.insert(0, url_or_query)
             else:
                 queue.insert(0, url_or_query)
@@ -504,19 +594,28 @@ async def playnow(ctx, *, url_or_query: str):
         logger.error(f"Error in playnow command: {e}")
         await ctx.send(f"Bir hata oluştu: {str(e)}")
 
+
 @bot.command()
 async def controls(ctx):
     await ctx.send("Müzik kontrolleri:", view=MusicControls())
     await ctx.send("Ekstra kontroller:", view=ExtraControls())
 
+
 @bot.command()
 async def move(ctx, from_pos: int, to_pos: int):
-    if not queue or from_pos < 1 or to_pos < 1 or from_pos > len(queue) or to_pos > len(queue):
+    if (
+        not queue
+        or from_pos < 1
+        or to_pos < 1
+        or from_pos > len(queue)
+        or to_pos > len(queue)
+    ):
         await ctx.send("Geçersiz sıra numarası.")
         return
     song = queue.pop(from_pos - 1)
     queue.insert(to_pos - 1, song)
     await ctx.send(f"{song} {to_pos}. sıraya taşındı.")
+
 
 @bot.command()
 async def remove(ctx, pos: int):
@@ -526,77 +625,126 @@ async def remove(ctx, pos: int):
     song = queue.pop(pos - 1)
     await ctx.send(f"{song} kuyruktan silindi.")
 
+
 @bot.command()
 async def search(ctx, *, query: str):
     try:
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist#pragma once': True,
-            'quiet': True,
-            'default_search': 'ytsearch5',
-            'extract_flat': True
+            "format": "bestaudio/best",
+            "noplaylist#pragma once": True,
+            "quiet": True,
+            "default_search": "ytsearch5",
+            "extract_flat": True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             result = ydl.extract_info(query, download=False)
-            if not result or 'entries' not in result or not result['entries']:
+            if not result or "entries" not in result or not result["entries"]:
                 await ctx.send("Arama sonucunda şarkı bulunamadı.")
                 return
 
-            search_results = result['entries']
+            search_results = result["entries"]
             view = SearchView(search_results, ctx)
-            embed = discord.Embed(title=f"'{query}' için Arama Sonuçları", description="Aşağıdaki butonlardan birini seçerek şarkıyı kuyruğa ekleyebilirsiniz.", color=discord.Color.green())
+            embed = discord.Embed(
+                title=f"'{query}' için Arama Sonuçları",
+                description="Aşağıdaki butonlardan birini seçerek şarkıyı kuyruğa ekleyebilirsiniz.",
+                color=discord.Color.green(),
+            )
             for i, entry in enumerate(search_results[:5], 1):
-                embed.add_field(name=f"{i}. {entry['title']}", value=f"Süre: {entry.get('duration', 'Bilinmiyor')} saniye", inline=False)
+                embed.add_field(
+                    name=f"{i}. {entry['title']}",
+                    value=f"Süre: {entry.get('duration', 'Bilinmiyor')} saniye",
+                    inline=False,
+                )
             await ctx.send(embed=embed, view=view)
 
     except Exception as e:
         logger.error(f"Error in search command: {e}")
         await ctx.send(f"Bir hata oluştu: {str(e)}")
 
+
 @bot.command()
 async def help(ctx):
-    embed = discord.Embed(title="Bot Komutları", description="Aşağıda botun tüm komutları ve kullanım örnekleri listelenmiştir.", color=discord.Color.blue())
+    embed = discord.Embed(
+        title="Bot Komutları",
+        description="Aşağıda botun tüm komutları ve kullanım örnekleri listelenmiştir.",
+        color=discord.Color.blue(),
+    )
     embed.add_field(
         name="!play <şarkı adı veya URL>",
         value="Bir şarkıyı veya Spotify çalma listesini kuyruğun sonuna ekler.\n**Örnek:**\n- `!play NTO Beyond Control`\n- `!play https://open.spotify.com/track/xxx`\n- `!play https://open.spotify.com/playlist/xxx`",
-        inline=False
+        inline=False,
     )
     embed.add_field(
         name="!playnext <şarkı adı veya URL>",
         value="Bir şarkıyı kuyruğun başına ekler.\n**Örnek:**\n- `!playnext NTO Beyond Control`\n- `!playnext https://open.spotify.com/track/xxx`",
-        inline=False
+        inline=False,
     )
     embed.add_field(
         name="!playnow <şarkı adı veya URL>",
         value="Mevcut şarkıyı keser ve yeni şarkıyı hemen çalar.\n**Örnek:**\n- `!playnow NTO Beyond Control`\n- `!playnow https://open.spotify.com/track/xxx`",
-        inline=False
+        inline=False,
     )
     embed.add_field(
         name="!search <şarkı adı>",
         value="YouTube'da şarkı arar ve ilk 5 sonucu butonlarla listeler.\n**Örnek:**\n- `!search NTO Beyond Control`",
-        inline=False
+        inline=False,
     )
     embed.add_field(
         name="!controls",
         value="Müzik kontrol butonlarını gösterir.\n**Örnek:**\n- `!controls`",
-        inline=False
+        inline=False,
     )
     embed.add_field(
         name="!move <başlangıç sırası> <hedef sıra>",
         value="Kuyruktaki bir şarkıyı başka bir sıraya taşır.\n**Örnek:**\n- `!move 3 1`",
-        inline=False
+        inline=False,
     )
     embed.add_field(
         name="!remove <sıra numarası>",
         value="Kuyruktaki belirli bir şarkıyı siler.\n**Örnek:**\n- `!remove 2`",
-        inline=False
+        inline=False,
     )
     embed.set_footer(text="Not: Botu kullanmadan önce bir ses kanalına girmelisiniz.")
     await ctx.send(embed=embed)
+
 
 @bot.event
 async def on_ready():
     setup_music_directory()
     logger.info(f"Bot {bot.user} olarak bağlandı!")
 
-bot.run(DISCORD_TOKEN)
+
+async def health_handler(request):
+    return web.Response(text="OK")
+
+
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8000)))
+    await site.start()
+    logger.info("Health check server started on port 8000")
+
+
+async def self_ping():
+    await asyncio.sleep(30)
+    port = int(os.getenv("PORT", 8000))
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(f"http://localhost:{port}/") as resp:
+                    logger.info(f"Self-ping: {resp.status}")
+            except Exception as e:
+                logger.error(f"Self-ping failed: {e}")
+            await asyncio.sleep(300)
+
+
+async def main():
+    await start_health_server()
+    asyncio.create_task(self_ping())
+    await bot.start(DISCORD_TOKEN)
+
+
+asyncio.run(main())
