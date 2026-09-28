@@ -76,8 +76,8 @@ plugins:
       flowerytts: false
       youtube: false
     spotify:
-      clientId: "${SPOTIFY_CLIENT_ID}"
-      clientSecret: "${SPOTIFY_CLIENT_SECRET}"
+      clientId: "${SPOTIFY_CLIENT_ID:}"
+      clientSecret: "${SPOTIFY_CLIENT_SECRET:}"
       countryCode: "TR"
       playlistLoadLimit: 6
       albumLoadLimit: 6

@@ -26,23 +26,21 @@ Bu dosya, botu kendi bilgisayarında çalıştıracak kişinin AI asistanına (C
   ```
   `200` dönmeli. `000` dönüyorsa kullanıcıya VPN açmasını söyle ve bekle.
 
-## 2. Kodu çek ve `.env` oluştur
+## 2. Zip'i aç ve `.env` oluştur
+
+Proje zip olarak gelir. Aç ve klasöre gir:
 
 ```bash
-git clone <repo-url> discord-bot && cd discord-bot
+unzip discord-bot.zip && cd discord-bot
+cp .env.example .env
 ```
 
-Proje köküne `.env` dosyası oluştur. Değerleri **kullanıcıdan iste** (bot sahibinden alınır):
+`.env`'i doldur. Değerleri **kullanıcıdan iste**, kendin uydurma:
 
-```
-DISCORD_TOKEN=...
-SPOTIFY_CLIENT_ID=...
-SPOTIFY_CLIENT_SECRET=...
-LAVALINK_URI=http://localhost:2333
-LAVALINK_PASSWORD=<rastgele-uzun-bir-şifre>
-```
-
-`LAVALINK_PASSWORD` için rastgele bir değer üretebilirsin: `openssl rand -hex 16`
+- `DISCORD_TOKEN`: botun token'ı. Bot sahibi ayrıca gönderir (zip'te yoktur).
+- `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET`: **opsiyonel**, sadece Spotify linkleri için. Kullanıcı https://developer.spotify.com/dashboard adresinde bir app oluşturup Client ID ve Secret'ı kopyalar. Boş bırakılırsa bot yine çalışır, sadece Spotify linkleri çalmaz.
+- `LAVALINK_PASSWORD`: rastgele bir değer üret: `openssl rand -hex 16`
+- `LAVALINK_URI`: olduğu gibi kalsın (`http://localhost:2333`).
 
 ## 3. Build ve ilk çalıştırma
 
@@ -127,8 +125,9 @@ Kullanıcıdan Discord'da şunları denemesini iste:
 
 ## Güncelleme
 
+Yeni zip gelince eski klasördeki `.env`'i yeni klasöre kopyala, sonra:
+
 ```bash
-git pull
 docker build -t discord-bot .
 docker rm -f bot
 docker run -d --restart unless-stopped --env-file .env \
