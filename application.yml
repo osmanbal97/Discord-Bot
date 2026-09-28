@@ -1,10 +1,11 @@
 server:
   port: 2333
-  address: 0.0.0.0
+  # Only the bot (same container) talks to Lavalink
+  address: 127.0.0.1
 
 lavalink:
   server:
-    password: "youshallnotpass"
+    password: "${LAVALINK_PASSWORD:youshallnotpass}"
     sources:
       youtube: false
       bandcamp: true
@@ -34,10 +35,10 @@ lavalink:
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.17.0"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
       repository: "https://maven.lavalink.dev/releases"
       snapshot: false
-    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.2.0"
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
       repository: "https://maven.lavalink.dev/releases"
       snapshot: false
 
@@ -49,8 +50,13 @@ plugins:
     allowDirectPlaylistIds: true
     clients:
       - MUSIC
+      - ANDROID_VR
       - WEB
-      - TVHTML5EMBEDDED
+      - WEBEMBEDDED
+      - TV # the only client that supports OAuth
+    # First run prints a google.com/device code in the logs; approve it with a
+    # BURNER Google account. Then set the printed refresh token as the
+    # PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN env var so restarts don't ask again.
     oauth:
       enabled: true
   lavasrc:

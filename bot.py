@@ -1,15 +1,17 @@
 import asyncio
 import logging
 import os
+import random
 from typing import cast
 
-import aiohttp
 import discord
 import wavelink
 from aiohttp import web
 from discord.ext import commands
 from discord.ui import Button, View
 from dotenv import load_dotenv
+
+import library
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -30,7 +32,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot.remove_command("help")
 
 STANDBY_TIMEOUT = 900
-standby_tasks: dict[int, asyncio.Task] = {}
+ALONE_TIMEOUT = 60
+alone_tasks: dict[int, asyncio.Task] = {}
 current_messages: dict[int, discord.Message] = {}
 is_looping: dict[int, bool] = {}
 is_shuffled: dict[int, bool] = {}
@@ -53,24 +56,19 @@ def format_duration(ms: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-async def standby(guild_id: int):
-    await asyncio.sleep(STANDBY_TIMEOUT)
-    guild = bot.get_guild(guild_id)
-    if guild and guild.voice_client:
-        player = cast(wavelink.Player, guild.voice_client)
-        if not player.playing:
-            channel = player.home if hasattr(player, "home") else None
-            await player.disconnect()
-            if channel:
-                await channel.send(
-                    "15 dakika boyunca hareketsiz kaldım, bu yüzden ayrılıyorum."
-                )
+async def connect_player(
+    guild: discord.Guild, member: discord.Member, channel: discord.abc.Messageable
+) -> tuple[wavelink.Player, bool]:
+    """Return the guild's player, connecting to the member's voice channel if needed.
 
-
-async def reset_standby(guild_id: int):
-    if guild_id in standby_tasks:
-        standby_tasks[guild_id].cancel()
-    standby_tasks[guild_id] = asyncio.create_task(standby(guild_id))
+    The bool is True when a new connection was made.
+    """
+    if guild.voice_client:
+        return cast(wavelink.Player, guild.voice_client), False
+    player = await member.voice.channel.connect(cls=wavelink.Player)
+    player.autoplay = wavelink.AutoPlayMode.partial
+    player.home = channel
+    return player, True
 
 
 class MusicControls(View):
@@ -153,6 +151,25 @@ class MusicControls(View):
             player.queue.clear()
         await interaction.response.send_message("Kuyruk temizlendi.", delete_after=5)
 
+    @discord.ui.button(label="➕ Kaydet", style=discord.ButtonStyle.green)
+    async def save(self, interaction: discord.Interaction, button: Button):
+        player = get_player(interaction)
+        if not player or not player.current:
+            await interaction.response.send_message(
+                "Şu anda çalan bir şarkı yok.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        track = player.current
+        folder = await library.detect_folder(track.title, track.author)
+        await library.add_track(folder, track.raw_data)
+        await interaction.followup.send(
+            f"**{track.title}** → **{folder}** klasörüne kaydedildi. "
+            "Yanlışsa aşağıdan değiştir.",
+            view=FolderPickView(track.raw_data, folder),
+            ephemeral=True,
+        )
+
 
 class ExtraControls(View):
     def __init__(self):
@@ -166,7 +183,7 @@ class ExtraControls(View):
             current = is_looping.get(guild_id, False)
             is_looping[guild_id] = not current
             if is_looping[guild_id]:
-                player.queue.mode = wavelink.QueueMode.loop
+                player.queue.mode = wavelink.QueueMode.loop_all
             else:
                 player.queue.mode = wavelink.QueueMode.normal
         state = "açık" if is_looping.get(guild_id, False) else "kapalı"
@@ -234,6 +251,79 @@ class ExtraControls(View):
         )
 
 
+class FolderPickView(View):
+    """Lets the user fix a wrong genre guess after saving with ➕."""
+
+    def __init__(self, raw: dict, current: str):
+        super().__init__(timeout=120)
+        self.raw = raw
+        names = list(dict.fromkeys(library.FOLDER_CHOICES + list(library.load())))
+        self.select = discord.ui.Select(
+            placeholder="Klasörü değiştir",
+            options=[
+                discord.SelectOption(label=name, default=name == current)
+                for name in names[:25]
+            ],
+        )
+        self.select.callback = self.pick
+        self.add_item(self.select)
+
+    async def pick(self, interaction: discord.Interaction):
+        folder = self.select.values[0]
+        await library.add_track(folder, self.raw)
+        await interaction.response.edit_message(
+            content=f"**{self.raw['info']['title']}** → **{folder}** klasörüne taşındı.",
+            view=None,
+        )
+
+
+class FoldersView(View):
+    """One button per folder; pressing it queues the whole folder."""
+
+    def __init__(self, folders: list[str]):
+        super().__init__(timeout=600)
+        for name in folders[:25]:
+            button = Button(label=name, style=discord.ButtonStyle.blurple)
+            button.callback = self.make_callback(name)
+            self.add_item(button)
+
+    @staticmethod
+    def make_callback(name: str):
+        async def callback(interaction: discord.Interaction):
+            message = await queue_folder(
+                interaction.guild, interaction.user, interaction.channel, name
+            )
+            await interaction.response.send_message(message)
+
+        return callback
+
+
+async def queue_folder(
+    guild: discord.Guild,
+    member: discord.Member,
+    channel: discord.abc.Messageable,
+    name: str,
+) -> str:
+    """Queue every song in a folder; returns the message to show the user."""
+    folder = library.find_folder(name)
+    if not folder:
+        return f"**{name}** diye bir klasör yok. `!folders` ile bakabilirsin."
+    if not member.voice or not member.voice.channel:
+        return "Önce bir ses kanalına gir."
+
+    tracks = [wavelink.Playable(raw) for raw in library.load()[folder]]
+    if is_shuffled.get(guild.id, False):
+        random.shuffle(tracks)
+
+    player, new_connection = await connect_player(guild, member, channel)
+    await player.queue.put_wait(tracks)
+    if not player.playing:
+        await player.play(player.queue.get(), volume=30)
+    if new_connection:
+        await channel.send("Extra controls:", view=ExtraControls())
+    return f"**{folder}** klasöründen {len(tracks)} şarkı kuyruğa eklendi."
+
+
 class SearchView(View):
     def __init__(self, search_results: list[wavelink.Playable], ctx):
         super().__init__(timeout=60)
@@ -260,14 +350,21 @@ class SearchView(View):
         choice = int(interaction.data["custom_id"]) - 1
         selected_track = self.search_results[choice]
 
-        player = get_player(interaction)
-        if player:
-            await player.queue.put_wait(selected_track)
+        if not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.response.send_message(
-                f"{selected_track.title} kuyruğa eklendi."
+                "Önce bir ses kanalına gir.", ephemeral=True
             )
-            if not player.playing:
-                await player.play(player.queue.get(), volume=30)
+            return
+
+        player, _ = await connect_player(
+            interaction.guild, interaction.user, interaction.channel
+        )
+        await player.queue.put_wait(selected_track)
+        await interaction.response.send_message(
+            f"{selected_track.title} kuyruğa eklendi."
+        )
+        if not player.playing:
+            await player.play(player.queue.get(), volume=30)
         self.stop()
 
 
@@ -317,7 +414,6 @@ async def on_wavelink_track_start(payload: wavelink.TrackStartEventPayload):
     player = payload.player
     if player:
         await send_now_playing(player, payload.track)
-        await reset_standby(player.guild.id)
 
 
 @bot.event
@@ -340,15 +436,59 @@ async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
                 except Exception:
                     pass
             current_messages[guild_id] = await player.home.send(embed=embed)
-        await reset_standby(guild_id)
 
 
-async def resolve_spotify(url_or_query: str) -> list[wavelink.Playable]:
-    """Search via wavelink which handles Spotify through LavaSrc plugin."""
-    tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
-    if isinstance(tracks, wavelink.Playlist):
-        return list(tracks.tracks)
-    return list(tracks) if tracks else []
+@bot.event
+async def on_wavelink_track_exception(payload: wavelink.TrackExceptionEventPayload):
+    # AutoPlay moves on to the next track by itself after a load failure.
+    message = payload.exception.get("message") or "bilinmeyen hata"
+    logger.error(f"Track exception for {payload.track.title}: {payload.exception}")
+    player = payload.player
+    if player and getattr(player, "home", None):
+        await player.home.send(
+            f"**{payload.track.title}** çalınamadı ({message}), sıradakine geçiliyor.",
+            delete_after=15,
+        )
+
+
+@bot.event
+async def on_wavelink_track_stuck(payload: wavelink.TrackStuckEventPayload):
+    logger.warning(f"Track stuck ({payload.threshold}ms): {payload.track.title}")
+    if payload.player:
+        await payload.player.skip(force=True)
+
+
+@bot.event
+async def on_wavelink_inactive_player(player: wavelink.Player):
+    home = getattr(player, "home", None)
+    await player.disconnect()
+    if home:
+        await home.send("Bir süredir hareketsiz kaldım, bu yüzden ayrılıyorum.")
+
+
+async def leave_if_alone(guild_id: int):
+    await asyncio.sleep(ALONE_TIMEOUT)
+    guild = bot.get_guild(guild_id)
+    if not guild or not guild.voice_client:
+        return
+    player = cast(wavelink.Player, guild.voice_client)
+    if player.channel and not any(not m.bot for m in player.channel.members):
+        home = getattr(player, "home", None)
+        await player.disconnect()
+        if home:
+            await home.send("Kanalda kimse kalmadı, ayrılıyorum.")
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    guild = member.guild
+    if guild.id in alone_tasks:
+        alone_tasks.pop(guild.id).cancel()
+    player = guild.voice_client
+    if not player or not player.channel:
+        return
+    if not any(not m.bot for m in player.channel.members):
+        alone_tasks[guild.id] = asyncio.create_task(leave_if_alone(guild.id))
 
 
 @bot.command()
@@ -358,14 +498,9 @@ async def play(ctx, *, url_or_query: str):
             await ctx.send("Önce bir ses kanalına gir.")
             return
 
-        player: wavelink.Player
-        if not ctx.voice_client:
-            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
-        else:
-            player = cast(wavelink.Player, ctx.voice_client)
-
-        if not hasattr(player, "home"):
-            player.home = ctx.channel
+        player, new_connection = await connect_player(
+            ctx.guild, ctx.author, ctx.channel
+        )
 
         tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
         if not tracks:
@@ -385,12 +520,12 @@ async def play(ctx, *, url_or_query: str):
         if not player.playing:
             await player.play(player.queue.get(), volume=30)
 
-        await ctx.send("Extra controls:", view=ExtraControls())
-        await reset_standby(ctx.guild.id)
+        if new_connection:
+            await ctx.send("Extra controls:", view=ExtraControls())
 
-    except Exception as e:
-        logger.error(f"Error in play command: {e}")
-        await ctx.send(f"Bir hata oluştu: {str(e)}")
+    except Exception:
+        logger.exception("Error in play command")
+        await ctx.send("Bir hata oluştu, lütfen tekrar dene.")
 
 
 @bot.command()
@@ -400,14 +535,7 @@ async def playnext(ctx, *, url_or_query: str):
             await ctx.send("Önce bir ses kanalına gir.")
             return
 
-        player: wavelink.Player
-        if not ctx.voice_client:
-            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
-        else:
-            player = cast(wavelink.Player, ctx.voice_client)
-
-        if not hasattr(player, "home"):
-            player.home = ctx.channel
+        player, _ = await connect_player(ctx.guild, ctx.author, ctx.channel)
 
         tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
         if not tracks:
@@ -425,11 +553,9 @@ async def playnext(ctx, *, url_or_query: str):
         if not player.playing:
             await player.play(player.queue.get(), volume=30)
 
-        await reset_standby(ctx.guild.id)
-
-    except Exception as e:
-        logger.error(f"Error in playnext command: {e}")
-        await ctx.send(f"Bir hata oluştu: {str(e)}")
+    except Exception:
+        logger.exception("Error in playnext command")
+        await ctx.send("Bir hata oluştu, lütfen tekrar dene.")
 
 
 @bot.command()
@@ -439,14 +565,9 @@ async def playnow(ctx, *, url_or_query: str):
             await ctx.send("Önce bir ses kanalına gir.")
             return
 
-        player: wavelink.Player
-        if not ctx.voice_client:
-            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
-        else:
-            player = cast(wavelink.Player, ctx.voice_client)
-
-        if not hasattr(player, "home"):
-            player.home = ctx.channel
+        player, new_connection = await connect_player(
+            ctx.guild, ctx.author, ctx.channel
+        )
 
         tracks: wavelink.Search = await wavelink.Playable.search(url_or_query)
         if not tracks:
@@ -460,12 +581,12 @@ async def playnow(ctx, *, url_or_query: str):
         track = tracks[0]
         await player.play(track, volume=30)
         await ctx.send(f"**{track.title}** şimdi çalınıyor.")
-        await ctx.send("Extra controls:", view=ExtraControls())
-        await reset_standby(ctx.guild.id)
+        if new_connection:
+            await ctx.send("Extra controls:", view=ExtraControls())
 
-    except Exception as e:
-        logger.error(f"Error in playnow command: {e}")
-        await ctx.send(f"Bir hata oluştu: {str(e)}")
+    except Exception:
+        logger.exception("Error in playnow command")
+        await ctx.send("Bir hata oluştu, lütfen tekrar dene.")
 
 
 @bot.command()
@@ -532,9 +653,86 @@ async def search(ctx, *, query: str):
             )
         await ctx.send(embed=embed, view=view)
 
-    except Exception as e:
-        logger.error(f"Error in search command: {e}")
-        await ctx.send(f"Bir hata oluştu: {str(e)}")
+    except Exception:
+        logger.exception("Error in search command")
+        await ctx.send("Bir hata oluştu, lütfen tekrar dene.")
+
+
+@bot.command()
+async def folders(ctx):
+    data = library.load()
+    if not data:
+        await ctx.send(
+            "Henüz kayıtlı şarkı yok. Çalan şarkıda **➕ Kaydet**'e basarak ekleyebilirsin."
+        )
+        return
+    embed = discord.Embed(
+        title="Klasörler",
+        description="\n".join(
+            f"**{name}** — {len(songs)} şarkı" for name, songs in data.items()
+        ),
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="Çalmak istediğin klasörün butonuna bas.")
+    await ctx.send(embed=embed, view=FoldersView(list(data)))
+
+
+@bot.command()
+async def folder(ctx, *, name: str):
+    folder_name = library.find_folder(name)
+    if not folder_name:
+        await ctx.send(f"**{name}** diye bir klasör yok.")
+        return
+    lines = [
+        f"{i}. {raw['info']['title']} — {raw['info']['author']}"
+        for i, raw in enumerate(library.load()[folder_name], 1)
+    ]
+    description = "\n".join(lines)
+    if len(description) > 4000:
+        description = description[:4000] + "\n..."
+    embed = discord.Embed(
+        title=f"{folder_name} ({len(lines)} şarkı)",
+        description=description,
+        color=discord.Color.green(),
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def playfolder(ctx, *, name: str):
+    try:
+        await ctx.send(await queue_folder(ctx.guild, ctx.author, ctx.channel, name))
+    except Exception:
+        logger.exception("Error in playfolder command")
+        await ctx.send("Bir hata oluştu, lütfen tekrar dene.")
+
+
+@bot.command()
+async def save(ctx, *, name: str | None = None):
+    player = get_player(ctx)
+    if not player or not player.current:
+        await ctx.send("Şu anda çalan bir şarkı yok.")
+        return
+    track = player.current
+    if name:
+        folder_name = library.find_folder(name) or name.strip().lower()
+    else:
+        folder_name = await library.detect_folder(track.title, track.author)
+    await library.add_track(folder_name, track.raw_data)
+    await ctx.send(f"**{track.title}** → **{folder_name}** klasörüne kaydedildi.")
+
+
+@bot.command()
+async def unsave(ctx, name: str, pos: int):
+    folder_name = library.find_folder(name)
+    if not folder_name:
+        await ctx.send(f"**{name}** diye bir klasör yok.")
+        return
+    raw = await library.remove_track(folder_name, pos - 1)
+    if not raw:
+        await ctx.send("Geçersiz sıra numarası. `!folder <ad>` ile numaralara bak.")
+        return
+    await ctx.send(f"**{raw['info']['title']}** {folder_name} klasöründen silindi.")
 
 
 @bot.command()
@@ -579,6 +777,21 @@ async def help(ctx):
         value="Kuyruktaki belirli bir şarkıyı siler.\n**Örnek:**\n- `!remove 2`",
         inline=False,
     )
+    embed.add_field(
+        name="➕ Kaydet / !save [klasör]",
+        value="Çalan şarkıyı türüne göre (rap, pop, rock...) otomatik klasöre kaydeder. Klasör adı verirsen oraya kaydeder.\n**Örnek:**\n- `!save`\n- `!save gym`",
+        inline=False,
+    )
+    embed.add_field(
+        name="!folders / !folder <ad> / !playfolder <ad>",
+        value="Klasörleri listeler, bir klasörün şarkılarını gösterir veya klasörü çalar. Shuffle açıksa karışık ekler.\n**Örnek:**\n- `!folders`\n- `!folder rap`\n- `!playfolder rap`",
+        inline=False,
+    )
+    embed.add_field(
+        name="!unsave <klasör> <sıra numarası>",
+        value="Klasörden bir şarkıyı siler.\n**Örnek:**\n- `!unsave rap 3`",
+        inline=False,
+    )
     embed.set_footer(text="Not: Botu kullanmadan önce bir ses kanalına girmelisiniz.")
     await ctx.send(embed=embed)
 
@@ -593,6 +806,7 @@ async def setup_hook():
         wavelink.Node(
             uri=LAVALINK_URI,
             password=LAVALINK_PASSWORD,
+            inactive_player_timeout=STANDBY_TIMEOUT,
         )
     ]
     await wavelink.Pool.connect(nodes=nodes, client=bot, cache_capacity=100)
@@ -615,22 +829,8 @@ async def start_health_server():
     logger.info("Health check server started on port 8000")
 
 
-async def self_ping():
-    await asyncio.sleep(30)
-    port = int(os.getenv("PORT", 8000))
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with session.get(f"http://localhost:{port}/") as resp:
-                    logger.info(f"Self-ping: {resp.status}")
-            except Exception as e:
-                logger.error(f"Self-ping failed: {e}")
-            await asyncio.sleep(300)
-
-
 async def main():
     await start_health_server()
-    asyncio.create_task(self_ping())
     await bot.start(DISCORD_TOKEN)
 
 

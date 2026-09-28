@@ -85,3 +85,6 @@ local_settings.py
 
 # PyCharm stuff
 .idea/
+
+# Saved genre folders
+data/
